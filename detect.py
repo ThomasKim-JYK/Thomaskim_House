@@ -14,6 +14,8 @@ from utils.general import check_img_size, check_requirements, check_imshow, non_
 from utils.plots import plot_one_box
 from utils.torch_utils import select_device, load_classifier, time_synchronized
 
+import heapq
+
 def detect(save_img=False):
     source, weights, view_img, save_txt, imgsz = opt.source, opt.weights, opt.view_img, opt.save_txt, opt.img_size
     save_img = not opt.nosave and not source.endswith('.txt')  # save inference images
@@ -59,6 +61,8 @@ def detect(save_img=False):
     if device.type != 'cpu':
         model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
     t0 = time.time()
+    #创建list用于统计
+    summary = [0,0,0,0,0,0]
     for path, img, im0s, vid_cap in dataset:
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
@@ -78,6 +82,7 @@ def detect(save_img=False):
         if classify:
             pred = apply_classifier(pred, modelc, img, im0s)
 
+        
         # Process detections
         for i, det in enumerate(pred):  # detections per image
             if webcam:  # batch_size >= 1
@@ -102,6 +107,11 @@ def detect(save_img=False):
 
                 # Write results
                 for *xyxy, conf, cls in reversed(det):
+                    #简单输出检测结果
+                    # print(int(cls))
+                    #做统计
+                    summary[int(cls)] = summary[int(cls)] + 1
+                    
                     if save_txt:  # Write to file
                         xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
                         line = (cls, *xywh, conf) if opt.save_conf else (cls, *xywh)  # label format
@@ -138,6 +148,10 @@ def detect(save_img=False):
                             save_path += '.mp4'
                         vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
                     vid_writer.write(im0)
+    #对每一个图片输出统计结果
+    print(summary)
+    index_list = probabilistic(summary)
+    show_probable_result(index_list)
 
     if save_txt or save_img:
         s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
@@ -145,15 +159,58 @@ def detect(save_img=False):
 
     print(f'Done. ({time.time() - t0:.3f}s)')
 
+def probabilistic(summary):
+    result = summary
+    sum_cube = summary[0] + summary[1]
+    sum_cylinder = summary[2] + summary[3]
+    sum_triangle = summary[4] + summary[5]
+    
+    p_cube = sum_cube/sum(summary)
+    p_cylinder = sum_cylinder/sum(summary)
+    p_triangle = sum_triangle/sum(summary)
+
+    #detect whether same shape in one box
+    flag = False #False means three different object shapes
+    if p_cube<0.07:
+        result[0] = 0
+        result[1] = 0
+        flag = True
+    elif p_cylinder<0.07:
+        result[2] = 0
+        result[3] = 0
+        flag = True
+    elif p_triangle<0.07:
+        result[4] = 0
+        result[5] = 0
+        flag = True
+
+    if flag: #only two shapes, output biggest three value's index
+        max_index = map(result.index, heapq.nlargest(3, result))
+        return list(max_index)
+    else: #there are three shapes
+        for i in [0,2,4]:
+            if result[i] <= result[i+1]:
+                result[i] = 0
+            else:
+                result[i+1] = 0
+        max_index = map(result.index, heapq.nlargest(3, result))
+        return list(max_index)
+
+def show_probable_result(index_list):
+    classes = ["Cube","Cube_short","Cylinder","Cylinder_short","Triangle","Triangle_short"]
+    print("The most probable results would be:")
+    for i in index_list:
+        print(classes[i])
+        
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights', nargs='+', type=str, default='C:/Users/Thomas/Desktop/yolov5_objects/runs/train/exp65/weights/best.pt', help='model.pt path(s)')
-    parser.add_argument('--source', type=str, default='11.mp4', help='source')  # file/folder, 0 for webcam
-    parser.add_argument('--img-size', type=int, default=384, help='inference size (pixels)')
+    parser.add_argument('--weights', nargs='+', type=str, default='C:/Users/Thomas/Desktop/yolov5_objects/runs/train/exp66/weights/best.pt', help='model.pt path(s)')
+    parser.add_argument('--source', type=str, default='test.jpg', help='source')  # file/folder, 0 for webcam
+    parser.add_argument('--img-size', type=int, default=384, help='inference size (pixels)') #384
     parser.add_argument('--conf-thres', type=float, default=0.25, help='object confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.45, help='IOU threshold for NMS')
-    parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+    parser.add_argument('--device', default='cpu', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--view-img', action='store_true', help='display results',default=True)
     parser.add_argument('--save-txt', action='store_true', help='save results to *.txt')
     parser.add_argument('--save-conf', action='store_true', help='save confidences in --save-txt labels')
